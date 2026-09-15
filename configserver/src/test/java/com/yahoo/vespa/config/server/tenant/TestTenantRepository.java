@@ -9,10 +9,11 @@ import com.yahoo.config.model.api.ConfigDefinitionRepo;
 import com.yahoo.config.model.api.OnnxModelCost;
 import com.yahoo.config.provision.Zone;
 import com.yahoo.container.jdisc.secretstore.SecretStore;
+import com.yahoo.vespa.config.server.ConfigActivationListener;
 import com.yahoo.vespa.config.server.ConfigServerDB;
 import com.yahoo.vespa.config.server.MockSecretStore;
-import com.yahoo.vespa.config.server.ConfigActivationListener;
 import com.yahoo.vespa.config.server.TestConfigDefinitionRepo;
+import com.yahoo.vespa.config.server.application.InheritableApplications;
 import com.yahoo.vespa.config.server.application.TenantApplicationsTest;
 import com.yahoo.vespa.config.server.filedistribution.FileDirectory;
 import com.yahoo.vespa.config.server.filedistribution.FileDistributionFactory;
@@ -35,10 +36,9 @@ import java.util.List;
  */
 public class TestTenantRepository extends TenantRepository {
 
-    private static final MockSecretStore mockSecretStore = new MockSecretStore();
-
     public TestTenantRepository(HostRegistry hostRegistry,
                                 Curator curator,
+                                SecretStore secretStore,
                                 Metrics metrics,
                                 FileDistributionFactory fileDistributionFactory,
                                 FlagSource flagSource,
@@ -58,7 +58,6 @@ public class TestTenantRepository extends TenantRepository {
               fileDistributionFactory,
               flagSource,
               new InThreadExecutorService(),
-              mockSecretStore,
               hostProvisionerProvider,
               configserverConfig,
               new ConfigServerDB(configserverConfig),
@@ -70,7 +69,8 @@ public class TestTenantRepository extends TenantRepository {
               tenantListener,
               new ZookeeperServerConfig.Builder().myid(0).build(),
               OnnxModelCost.disabled(),
-              List.of(new DefaultEndpointCertificateSecretStore(mockSecretStore)));
+              List.of(new DefaultEndpointCertificateSecretStore(secretStore)),
+              InheritableApplications.empty());
     }
 
     public static class Builder {
@@ -78,6 +78,7 @@ public class TestTenantRepository extends TenantRepository {
         ConfigDefinitionRepo configDefinitionRepo = new TestConfigDefinitionRepo();
         HostRegistry hostRegistry = new HostRegistry();
         Curator curator = new MockCurator();
+        SecretStore secretStore = new MockSecretStore();
         Metrics metrics = Metrics.createTestMetrics();
         FileDistributionFactory fileDistributionFactory = null;
         FlagSource flagSource = new InMemoryFlagSource();
@@ -105,6 +106,11 @@ public class TestTenantRepository extends TenantRepository {
 
         public Builder withCurator(Curator curator) {
             this.curator = curator;
+            return this;
+        }
+
+        public Builder withSecretStore(SecretStore secretStore) {
+            this.secretStore = secretStore;
             return this;
         }
 
@@ -150,9 +156,12 @@ public class TestTenantRepository extends TenantRepository {
 
         public TenantRepository build() {
             if (fileDistributionFactory == null)
-                fileDistributionFactory = new FileDistributionFactory(configserverConfig, new FileDirectory(configserverConfig));
+                fileDistributionFactory = new FileDistributionFactory(configserverConfig,
+                                                                      new FileDirectory(configserverConfig),
+                                                                      new InMemoryFlagSource());
             return new TestTenantRepository(hostRegistry,
                                             curator,
+                                            secretStore,
                                             metrics,
                                             fileDistributionFactory,
                                             flagSource,

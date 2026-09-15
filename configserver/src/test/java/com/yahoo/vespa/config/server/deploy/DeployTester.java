@@ -11,6 +11,7 @@ import com.yahoo.config.model.api.Model;
 import com.yahoo.config.model.api.ModelContext;
 import com.yahoo.config.model.api.ModelCreateResult;
 import com.yahoo.config.model.api.ModelFactory;
+import com.yahoo.config.model.api.Provisioned;
 import com.yahoo.config.model.api.ValidationParameters;
 import com.yahoo.config.model.deploy.DeployState;
 import com.yahoo.config.model.provision.InMemoryProvisioner;
@@ -18,15 +19,19 @@ import com.yahoo.config.model.test.HostedConfigModelRegistry;
 import com.yahoo.config.model.test.MockApplicationPackage;
 import com.yahoo.config.provision.AllocatedHosts;
 import com.yahoo.config.provision.ApplicationId;
+import com.yahoo.config.provision.DeploymentConfigStore;
 import com.yahoo.config.provision.Provisioner;
 import com.yahoo.config.provision.TenantName;
 import com.yahoo.config.provision.Zone;
+import com.yahoo.container.jdisc.secretstore.SecretStore;
 import com.yahoo.vespa.config.server.ApplicationRepository;
 import com.yahoo.vespa.config.server.MockProvisioner;
+import com.yahoo.vespa.config.server.MockSecretStore;
 import com.yahoo.vespa.config.server.TimeoutBudget;
 import com.yahoo.vespa.config.server.application.ConfigConvergenceChecker;
-import com.yahoo.vespa.config.server.application.OrchestratorMock;
+import com.yahoo.vespa.config.server.application.ConfigStateChecker;
 import com.yahoo.vespa.config.server.filedistribution.MockFileDistributionFactory;
+import com.yahoo.vespa.config.server.http.v2.PrepareAndActivateResult;
 import com.yahoo.vespa.config.server.http.v2.PrepareResult;
 import com.yahoo.vespa.config.server.modelfactory.ModelFactoryRegistry;
 import com.yahoo.vespa.config.server.monitoring.Metrics;
@@ -84,6 +89,10 @@ public class DeployTester {
         return tenantRepository.getTenant(applicationId.tenant());
     }
 
+    public Provisioned provisioned() {
+        return applicationRepository().getActiveApplicationVersions(applicationId()).get().applications().get(0).getModel().provisioned();
+    }
+
     /** Create a model factory for the version of this source*/
     public static CountingModelFactory createModelFactory(Clock clock) {
         return new CountingModelFactory(clock);
@@ -138,14 +147,14 @@ public class DeployTester {
     /**
      * Do the initial "deploy" with the existing API-less code as the deploy API doesn't support first deploys yet.
      */
-    public PrepareResult deployApp(String applicationPath, String vespaVersion)  {
+    public PrepareAndActivateResult deployApp(String applicationPath, String vespaVersion)  {
         return deployApp(applicationPath, new PrepareParams.Builder().vespaVersion(vespaVersion));
     }
 
     /**
      * Do the initial "deploy" with the existing API-less code as the deploy API doesn't support first deploys yet.
      */
-    public PrepareResult deployApp(String applicationPath, PrepareParams.Builder paramsBuilder)  {
+    public PrepareAndActivateResult deployApp(String applicationPath, PrepareParams.Builder paramsBuilder)  {
         String endpoints = """
                 [
                   {
@@ -162,7 +171,7 @@ public class DeployTester {
                      .timeoutBudget(new TimeoutBudget(clock, Duration.ofSeconds(60)))
                      .containerEndpoints(endpoints);
 
-        return applicationRepository.deploy(new File(applicationPath), paramsBuilder.build());
+        return applicationRepository.prepareAndActivate(new File(applicationPath), paramsBuilder.build());
     }
 
     public AllocatedHosts getAllocatedHostsOf(ApplicationId applicationId) {
@@ -276,10 +285,13 @@ public class DeployTester {
         private ConfigserverConfig configserverConfig;
         private Zone zone;
         private Curator curator = new MockCurator();
+        private SecretStore secretStore = new MockSecretStore();
         private Metrics metrics;
         private List<ModelFactory> modelFactories;
-        private ConfigConvergenceChecker configConvergenceChecker = new ConfigConvergenceChecker();
         private FlagSource flagSource = new InMemoryFlagSource();
+        private ConfigConvergenceChecker configConvergenceChecker = new ConfigConvergenceChecker();
+        private ConfigStateChecker configStateChecker = new ConfigStateChecker();
+        private DeploymentConfigStore deploymentConfigStore;
 
         public Builder(TemporaryFolder temporaryFolder) {
             this.temporaryFolder = temporaryFolder;
@@ -302,6 +314,7 @@ public class DeployTester {
                     .withClock(clock)
                     .withConfigserverConfig(configserverConfig)
                     .withCurator(curator)
+                    .withSecretStore(secretStore)
                     .withFileDistributionFactory(new MockFileDistributionFactory(configserverConfig))
                     .withMetrics(Optional.ofNullable(metrics).orElse(Metrics.createTestMetrics()))
                     .withModelFactoryRegistry((new ModelFactoryRegistry(modelFactories)))
@@ -317,10 +330,11 @@ public class DeployTester {
             ApplicationRepository applicationRepository = new ApplicationRepository.Builder()
                     .withTenantRepository(tenantRepository)
                     .withConfigserverConfig(configserverConfig)
-                    .withOrchestrator(new OrchestratorMock())
                     .withClock(clock)
                     .withConfigConvergenceChecker(configConvergenceChecker)
+                    .withConfigStateChecker(configStateChecker)
                     .withFlagSource(flagSource)
+                    .withDeploymentConfigStore(Optional.ofNullable(deploymentConfigStore))
                     .build();
 
             return new DeployTester(clock, tenantRepository, applicationRepository);
@@ -355,6 +369,11 @@ public class DeployTester {
             return this;
         }
 
+        public Builder secretStore(SecretStore secretStore) {
+            this.secretStore = secretStore;
+            return this;
+        }
+
         public Builder metrics(Metrics metrics) {
             this.metrics = metrics;
             return this;
@@ -374,8 +393,18 @@ public class DeployTester {
             return this;
         }
 
+        public Builder configStateChecker(ConfigStateChecker configStateChecker) {
+            this.configStateChecker = configStateChecker;
+            return this;
+        }
+
         public Builder flagSource(FlagSource flagSource) {
             this.flagSource = flagSource;
+            return this;
+        }
+
+        public Builder deploymentConfigStore(com.yahoo.config.provision.DeploymentConfigStore deploymentConfigStore) {
+            this.deploymentConfigStore = deploymentConfigStore;
             return this;
         }
 
